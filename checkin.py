@@ -66,7 +66,10 @@ def main():
             )
 
             j = safe_json(r)
-            msg = j.get("message", "")
+
+            print(f"[账号 {idx}] HTTP 状态码: {r.status_code}")
+            print(f"[账号 {idx}] 签到接口响应: {json.dumps(j, ensure_ascii=False)}")
+            msg = str(j.get("message") or "")
             msg_lower = msg.lower()
 
             if "got" in msg_lower:
