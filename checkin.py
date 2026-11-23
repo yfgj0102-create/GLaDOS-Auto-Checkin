@@ -567,9 +567,12 @@ def push_all(title: str, content: str) -> Tuple[int, int]:
 # ==================== 签到逻辑 ====================
 def classify_checkin(code: Any, message: str) -> str:
     """
-    判断签到结果: ok / repeat / fail
+    判断签到结果: ok / repeat / manual / fail
     GLaDOS API: code=0 成功, code=1 已签到, 其他失败
     """
+    msg = (message or "").casefold()
+    if "cloudflare verification failed" in msg or "human verification timed out" in msg:
+        return "manual"
     try:
         code = int(code)
     except (TypeError, ValueError):
@@ -578,7 +581,6 @@ def classify_checkin(code: Any, message: str) -> str:
         return "ok"
     if code == 1:
         return "repeat"          # GLaDOS 契约：code==1 即已签到，无条件（H4 根治）
-    msg = (message or "").lower()
     # 使用精确正则匹配代替宽泛的 "got" 子串检查（H3），兼容 point/points
     if re.search(r"got\s+\d+\s+points?", msg):
         return "ok"
@@ -654,7 +656,9 @@ def checkin_account(
         if result == "ok":
             status = f"✅ 成功 (+{earned}积分)"
         elif result == "repeat":
-            status = "🔄 已签到"
+            status = "🔄 已签到（本次无新增）"
+        elif result == "manual":
+            status = "❌ Cloudflare 人机验证未通过，本次未记账；请到 GLaDOS 官网手动签到"
         else:
             # 区分「服务端鉴权失败」与「其它业务失败」：鉴权失败通常是 Cookie 过期/
             # 复制不完整，需要给出「重新获取 Cookie」的可操作提示，避免与格式问题混淆。
@@ -770,7 +774,7 @@ def main() -> int:
 
     logger.info("检测到 %d 个账号", len(cookies))
 
-    ok = fail = repeat = 0
+    ok = fail = repeat = manual = 0
     lines = []
 
     with requests.Session() as session:  # H1：使用上下文管理器确保连接释放
@@ -796,6 +800,8 @@ def main() -> int:
                 ok += 1
             elif acc["result"] == "repeat":
                 repeat += 1
+            elif acc["result"] == "manual":
+                manual += 1
             else:
                 fail += 1
 
@@ -812,7 +818,22 @@ def main() -> int:
             if idx < len(cookies):
                 time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
 
-    title = f"GLaDOS 签到完成 ✅{ok} ❌{fail} 🔄{repeat}"
+    title = f"GLaDOS：新增签到 {ok}｜已签到 {repeat}｜待手动验证 {manual}｜其他失败 {fail}"
+    logger.info("%s", title)
+    if manual and os.getenv("GITHUB_ACTIONS") == "true":
+        notice = "Cloudflare 验证未通过，本次未记账。请到 GLaDOS 官网手动签到。"
+        print(f"::warning title=GLaDOS 需要手动签到::{notice}")
+        summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            try:
+                with open(summary_path, "a", encoding="utf-8") as summary:
+                    summary.write(
+                        f"## GLaDOS：{manual} 个账号需要手动签到\n\n"
+                        "[打开 GLaDOS 官网签到页](https://glados.cloud/console/checkin)\n\n"
+                        f"{notice}\n"
+                    )
+            except OSError:
+                logger.warning("无法写入 GitHub Actions 运行摘要")
     content = "\n".join(lines)
 
     # #4：汇总内容过长时统一截断，避免部分推送渠道因超限静默失败
